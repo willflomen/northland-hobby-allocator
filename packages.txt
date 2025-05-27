@@ -1,0 +1,7 @@
+build-essential
+coinor-cbc
+coinor-libcbc-dev
+coinor-libclp-dev
+glpk-utils
+libglpk-dev
+pkg-config
