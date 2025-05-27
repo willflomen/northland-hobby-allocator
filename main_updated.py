@@ -1,14 +1,20 @@
 import os
 import sys
 import argparse
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
 from datetime import datetime
 
 # Add local bin to PATH for Streamlit Cloud
 if '/home/appuser/.local/bin' not in os.environ.get('PATH', ''):
     os.environ['PATH'] = '/home/appuser/.local/bin:' + os.environ.get('PATH', '')
+
+try:
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    print("✓ Data processing libraries imported successfully")
+except ImportError as e:
+    print(f"✗ Failed to import data processing libraries: {e}")
+    sys.exit(1)
 
 try:
     import pulp
