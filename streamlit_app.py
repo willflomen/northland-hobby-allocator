@@ -18,14 +18,6 @@ import sys
 # App version - helpful for troubleshooting
 APP_VERSION = "1.1.0"
 
-# Set page configuration
-st.set_page_config(
-    page_title="Camp Northland Hobby Allocator",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
 # Import the HobbyAllocator class directly instead of using subprocess
 try:
     # Try to import the HobbyAllocator class from main_updated.py
@@ -127,7 +119,13 @@ def check_dependencies():
     
     return True
 
-
+# Set page configuration
+st.set_page_config(
+    page_title="Camp Northland Hobby Allocator",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 # Helper functions - defined at the top so they're available throughout the file
 def choice_to_word(choice):
@@ -307,6 +305,110 @@ def create_choice_distribution_chart(choice_data):
     ax.grid(axis='y', linestyle='--', alpha=0.7)
     
     # Adjust layout
+    plt.tight_layout()
+    
+    return fig
+
+def create_hobby_choice_distribution_chart(hobby_choice_counts, restricted_hobbies=[]):
+    """Create a stacked bar chart showing the distribution of choice ranks for each hobby"""
+    
+    # Get hobbies and their data
+    hobbies = list(hobby_choice_counts.keys())
+    
+    # Extract data for plotting
+    data = {
+        '1st Choice': [hobby_choice_counts[h].get(1, 0) for h in hobbies],
+        '2nd Choice': [hobby_choice_counts[h].get(2, 0) for h in hobbies],
+        '3rd Choice': [hobby_choice_counts[h].get(3, 0) for h in hobbies],
+        '4th Choice': [hobby_choice_counts[h].get(4, 0) for h in hobbies],
+        '5th Choice': [hobby_choice_counts[h].get(5, 0) for h in hobbies],
+        'No Choice': [hobby_choice_counts[h].get(0, 0) for h in hobbies],
+        'Pre-assigned': [hobby_choice_counts[h].get('pre', 0) for h in hobbies]
+    }
+    
+    # Get total counts for each hobby for sorting
+    total_counts = [sum(hobby_choice_counts[h].values()) for h in hobbies]
+    
+    # Sort hobbies by total campers (descending)
+    sorted_indices = np.argsort(total_counts)[::-1]
+    hobbies = [hobbies[i] for i in sorted_indices]
+    total_counts = [total_counts[i] for i in sorted_indices]
+    
+    # Reorder the data after sorting
+    for key in data:
+        data[key] = [data[key][i] for i in sorted_indices]
+    
+    # Create figure and axis
+    fig, ax = plt.subplots(figsize=(16, 10))
+    
+    # Define colors for the stacked bars
+    colors = {
+        '1st Choice': '#2ecc71',  
+        '2nd Choice': '#27ae60',  
+        '3rd Choice': '#3498db', 
+        '4th Choice': '#f1c40f', 
+        '5th Choice': '#e67e22', 
+        'No Choice': '#e74c3c', 
+        'Pre-assigned': '#9b59b6'
+    }
+    
+    # Create the stacked bars
+    bottom = np.zeros(len(hobbies))
+    bars = {}
+    
+    # Draw bars in specific order (1st choice at bottom, pre-assigned at top)
+    stacking_order = ['1st Choice', '2nd Choice', '3rd Choice', '4th Choice', '5th Choice', 'No Choice', 'Pre-assigned']
+    
+    for category in stacking_order:
+        bars[category] = ax.bar(hobbies, data[category], bottom=bottom, label=category, color=colors[category])
+        bottom += np.array(data[category])
+    
+    # Add total count labels on top of stacked bars
+    for i, total in enumerate(total_counts):
+        if total > 0:  # Only label bars with campers
+            ax.text(i, total + 1, str(total), ha='center', va='bottom', fontweight='bold')
+    
+    # Add data values to each segment of the stacked bars
+    bottom_tracker = np.zeros(len(hobbies))
+    for category in stacking_order:
+        for i, value in enumerate(data[category]):
+            if value > 0:  # Only label segments with campers
+                # Calculate the middle position of the segment for text placement
+                pos = bottom_tracker[i] + value/2
+                # Add text with smaller font if the segment is narrow
+                if value > 2:  # Only add text if segment is tall enough
+                    ax.text(i, pos, str(value), ha='center', va='center', fontweight='bold', 
+                        color='white' if category in ['Pre-assigned'] else 'black',
+                        fontsize=8 if value < 5 else 10)
+        bottom_tracker += np.array(data[category])
+    
+    # Mark restricted hobbies if available
+    if restricted_hobbies:
+        restricted_indices = [i for i, h in enumerate(hobbies) if h in restricted_hobbies]
+        for i in restricted_indices:
+            ax.text(i, -2, "*", ha='center', va='top', fontsize=24, color='red')
+            
+        # Add note about restricted hobbies
+        if restricted_indices:
+            ax.text(0.01, 0.01, "* Restricted hobbies (only pre-assigned campers)", transform=ax.transAxes, 
+                   fontsize=10, color='red', ha='left')
+    
+    # Set axis labels and title
+    ax.set_xlabel('Hobby', fontsize=12)
+    ax.set_ylabel('Number of Campers', fontsize=12)
+    ax.set_title('Choice Distribution by Hobby', fontsize=16)
+    
+    # Set x-axis tick labels with rotation for better readability
+    ax.set_xticks(range(len(hobbies)))
+    ax.set_xticklabels(hobbies, rotation=45, ha='right', fontsize=10)
+    
+    # Add legend
+    ax.legend(loc='upper right')
+    
+    # Add grid for easier reading
+    ax.grid(axis='y', linestyle='--', alpha=0.7)
+    
+    # Adjust layout to make room for rotated labels
     plt.tight_layout()
     
     return fig
@@ -667,9 +769,18 @@ if not st.session_state.has_run:
                     choice_data[i] = 0
                 choice_data['pre'] = 0
                 
+                # Create hobby choice counts data
+                hobby_choice_counts = {}
+                hobbies = allocator.hobby_config['Name'].tolist()
+                for hobby in hobbies:
+                    hobby_choice_counts[hobby] = {
+                        1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 0: 0, 'pre': 0
+                    }
+                
                 for i, hobby in allocator.allocations.items():
                     if allocator.pre_assignments and i in allocator.pre_assignments:
                         choice_data['pre'] += 1
+                        hobby_choice_counts[hobby]['pre'] += 1
                         continue
                     
                     choice_rank = 0
@@ -680,6 +791,7 @@ if not st.session_state.has_run:
                             break
                     
                     choice_data[choice_rank] += 1
+                    hobby_choice_counts[hobby][choice_rank] += 1
                 
                 # Create visualizations
                 progress_bar.progress(0.9)
@@ -687,6 +799,7 @@ if not st.session_state.has_run:
                 
                 allocation_chart = create_allocation_bar_chart(summary_df)
                 choice_chart = create_choice_distribution_chart(choice_data)
+                hobby_choice_chart = create_hobby_choice_distribution_chart(hobby_choice_counts, allocator.restricted_hobbies)
                 
                 # Save chart images to bytes
                 allocation_img_bytes = io.BytesIO()
@@ -697,16 +810,23 @@ if not st.session_state.has_run:
                 choice_chart.savefig(choice_img_bytes, format='png', dpi=300, bbox_inches='tight')
                 choice_img_bytes.seek(0)
                 
+                hobby_choice_img_bytes = io.BytesIO()
+                hobby_choice_chart.savefig(hobby_choice_img_bytes, format='png', dpi=300, bbox_inches='tight')
+                hobby_choice_img_bytes.seek(0)
+                
                 # Store results in session state
                 st.session_state.results = {
                     'allocator': allocator,
                     'summary_df': summary_df,
                     'master_df': master_df,
                     'choice_data': choice_data,
+                    'hobby_choice_counts': hobby_choice_counts,
                     'allocation_chart': allocation_chart,
                     'choice_chart': choice_chart,
+                    'hobby_choice_chart': hobby_choice_chart,
                     'allocation_img_bytes': allocation_img_bytes.getvalue(),
-                    'choice_img_bytes': choice_img_bytes.getvalue()
+                    'choice_img_bytes': choice_img_bytes.getvalue(),
+                    'hobby_choice_img_bytes': hobby_choice_img_bytes.getvalue()
                 }
                 
                 # Clean up temporary files
@@ -820,7 +940,7 @@ else:
     st.subheader("Visualizations")
     
     # Create tabs for visualizations
-    tab1, tab2 = st.tabs(["Hobby Allocation", "Choice Distribution"])
+    tab1, tab2, tab3 = st.tabs(["Hobby Allocation", "Choice Distribution", "Choice Distribution by Hobby"])
     
     with tab1:
         st.pyplot(results['allocation_chart'])
@@ -838,6 +958,16 @@ else:
             label="Download Choice Distribution Chart",
             data=results['choice_img_bytes'],
             file_name="choice_distribution.png",
+            mime="image/png",
+            use_container_width=True
+        )
+    
+    with tab3:
+        st.pyplot(results['hobby_choice_chart'])
+        st.download_button(
+            label="Download Hobby Choice Distribution Chart",
+            data=results['hobby_choice_img_bytes'],
+            file_name="hobby_choice_distribution.png",
             mime="image/png",
             use_container_width=True
         )
@@ -1029,6 +1159,7 @@ else:
             # Add visualizations
             zip_file.writestr('allocation_chart.png', results['allocation_img_bytes'])
             zip_file.writestr('choice_distribution.png', results['choice_img_bytes'])
+            zip_file.writestr('hobby_choice_distribution.png', results['hobby_choice_img_bytes'])
             
             # Add next week's previous allocations
             next_week_df = pd.DataFrame()
