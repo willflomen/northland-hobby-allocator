@@ -18,6 +18,14 @@ import sys
 # App version - helpful for troubleshooting
 APP_VERSION = "1.1.0"
 
+# Set page configuration
+st.set_page_config(
+    page_title="Camp Northland Hobby Allocator",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 # Import the HobbyAllocator class directly instead of using subprocess
 try:
     # Try to import the HobbyAllocator class from main_updated.py
@@ -118,14 +126,6 @@ def check_dependencies():
         return False
     
     return True
-
-# Set page configuration
-st.set_page_config(
-    page_title="Camp Northland Hobby Allocator",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
 
 # Helper functions - defined at the top so they're available throughout the file
 def choice_to_word(choice):
