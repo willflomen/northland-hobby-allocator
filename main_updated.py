@@ -62,7 +62,7 @@ class HobbyAllocator:
         self.satisfaction_score = None
         self.model = None
         self.choice_distribution = None
-        self.pre_assignments = None
+        self.pre_assignments = {}  # Initialize as empty dict instead of None
         self.previous_allocations = None
         self.weights = None
         self.restricted_hobbies = []
@@ -366,12 +366,12 @@ class HobbyAllocator:
             model += pulp.lpSum(x[(i, j)] for j in hobbies) == 1
         
         # Special handling for pre-assigned campers - must happen first to override other constraints
-        if hasattr(self, 'pre_assignments') and self.pre_assignments is not None and self.pre_assignments:
+        if self.pre_assignments:  # Check if pre_assignments is not empty
             for i, hobby in self.pre_assignments.items():
                 model += x[(i, hobby)] == 1
             
             # Handle restricted hobbies - prevent non-pre-assigned campers from being assigned to them
-            if hasattr(self, 'restricted_hobbies') and self.restricted_hobbies:
+            if self.restricted_hobbies:
                 for hobby in self.restricted_hobbies:
                     allowed_campers = [i for i, h in self.pre_assignments.items() if h == hobby]
                     for i in campers:
@@ -408,7 +408,11 @@ class HobbyAllocator:
                 model += pulp.lpSum(x[(i, j)] for i in campers) <= max_capacity
             else:
                 # For non-restricted hobbies, exclude pre-assigned campers from capacity constraints
-                non_preassigned_campers = [i for i in campers if i not in self.pre_assignments or self.pre_assignments[i] != j]
+                # FIX: Check if pre_assignments exists and is not None before using it
+                if self.pre_assignments:
+                    non_preassigned_campers = [i for i in campers if i not in self.pre_assignments or self.pre_assignments[i] != j]
+                else:
+                    non_preassigned_campers = campers  # All campers if no pre-assignments
                 
                 # Min capacity constraint (excluding pre-assigned)
                 model += pulp.lpSum(x[(i, j)] for i in non_preassigned_campers) >= min_capacity
@@ -441,7 +445,7 @@ class HobbyAllocator:
                 
             for i in campers:
                 # Skip division constraints for pre-assigned campers
-                if hasattr(self, 'pre_assignments') and self.pre_assignments is not None and i in self.pre_assignments and self.pre_assignments[i] == j:
+                if self.pre_assignments and i in self.pre_assignments and self.pre_assignments[i] == j:
                     continue
                 
                 if divisions[i] not in allowed_groups:
@@ -478,7 +482,7 @@ class HobbyAllocator:
             # Check if this camper is pre-assigned
             is_preassigned = False
             preassigned_hobby = None
-            if hasattr(self, 'pre_assignments') and self.pre_assignments is not None and i in self.pre_assignments:
+            if self.pre_assignments and i in self.pre_assignments:
                 is_preassigned = True
                 preassigned_hobby = self.pre_assignments[i]
             
@@ -493,7 +497,7 @@ class HobbyAllocator:
         # Special handling for pre-assigned campers' division constraints
         # This allows a single pre-assigned camper to be assigned to a hobby
         # even if they're the only one from their division
-        if hasattr(self, 'pre_assignments') and self.pre_assignments is not None and self.pre_assignments:
+        if self.pre_assignments:
             for i, hobby in self.pre_assignments.items():
                 # Force this assignment regardless of division constraints
                 model += x[(i, hobby)] == 1
@@ -549,7 +553,7 @@ class HobbyAllocator:
                 
                 # Check if this was a pre-assignment
                 is_preassigned = False
-                if hasattr(self, 'pre_assignments') and self.pre_assignments is not None and i in self.pre_assignments:
+                if self.pre_assignments and i in self.pre_assignments:
                     is_preassigned = True
                     hobby_choice_counts[hobby]['pre'] += 1
                     top_choices[0] += 1  # Count in "no choice" for overall stats
@@ -594,7 +598,7 @@ class HobbyAllocator:
         if hasattr(self, 'previous_allocations') and self.previous_allocations:
             priority_campers = [i for i, prev_rank in self.previous_allocations.items() if prev_rank > 1]
             priority_first_choice = sum(1 for i in priority_campers if i in allocations and 
-                                    (hasattr(self, 'pre_assignments') and self.pre_assignments is not None and i in self.pre_assignments) or
+                                    (self.pre_assignments and i in self.pre_assignments) or
                                     any(self.campers_df.loc[i, f'Choice {j}'] == allocations[i] for j in [1] if f'Choice {j}' in self.campers_df.columns))
             
             if priority_campers:
@@ -632,7 +636,7 @@ class HobbyAllocator:
             
             # Check if pre-assigned
             pre_assigned = False
-            if hasattr(self, 'pre_assignments') and self.pre_assignments is not None and camper_idx in self.pre_assignments:
+            if self.pre_assignments and camper_idx in self.pre_assignments:
                 pre_assigned = True
             
             hobby_dfs[hobby].append({
@@ -690,7 +694,7 @@ class HobbyAllocator:
             
             # Check if pre-assigned
             pre_assigned = False
-            if hasattr(self, 'pre_assignments') and self.pre_assignments is not None and camper_idx in self.pre_assignments:
+            if self.pre_assignments and camper_idx in self.pre_assignments:
                 pre_assigned = True
             
             division_dfs[division].append({
@@ -745,7 +749,7 @@ class HobbyAllocator:
                 hobby_counts[hobby] = 1
                 
             # Count pre-assigned campers
-            if hasattr(self, 'pre_assignments') and self.pre_assignments is not None and i in self.pre_assignments:
+            if self.pre_assignments and i in self.pre_assignments:
                 if hobby in pre_assigned_counts:
                     pre_assigned_counts[hobby] += 1
                 else:
@@ -892,7 +896,7 @@ class HobbyAllocator:
         # Count each camper's choice rank, separating pre-assigned campers
         for i, hobby in self.allocations.items():
             # Check if this was a pre-assignment
-            if hasattr(self, 'pre_assignments') and self.pre_assignments is not None and i in self.pre_assignments:
+            if self.pre_assignments and i in self.pre_assignments:
                 pre_assigned_count += 1
                 continue  # Skip pre-assigned campers from regular counts
             
@@ -1097,7 +1101,7 @@ class HobbyAllocator:
             master_df.loc[i, 'Assigned Hobby'] = hobby
             
             # Check if this was a pre-assignment
-            if hasattr(self, 'pre_assignments') and self.pre_assignments is not None and i in self.pre_assignments:
+            if self.pre_assignments and i in self.pre_assignments:
                 master_df.loc[i, 'Pre-assigned'] = 'Yes'
             
             # Fill in priority weight if applicable
@@ -1213,9 +1217,7 @@ class HobbyAllocator:
             weight = self.weights[i] if i in self.weights else 1.0
             
             # Pre-assigned status
-            is_preassigned = "Yes" if (hasattr(self, 'pre_assignments') and 
-                                    self.pre_assignments is not None and 
-                                    i in self.pre_assignments) else "No"
+            is_preassigned = "Yes" if (self.pre_assignments and i in self.pre_assignments) else "No"
             
             # Add to comparison data
             comparison_data.append({

@@ -1,6 +1,5 @@
 import streamlit as st
 import os
-import subprocess
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -17,15 +16,52 @@ import shutil
 import sys
 
 # App version - helpful for troubleshooting
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
-# Add local bin to PATH for Streamlit Cloud
-if '/home/appuser/.local/bin' not in os.environ.get('PATH', ''):
-    os.environ['PATH'] = '/home/appuser/.local/bin:' + os.environ.get('PATH', '')
+# Import the HobbyAllocator class directly instead of using subprocess
+try:
+    # Try to import the HobbyAllocator class from main_updated.py
+    from main_updated import HobbyAllocator
+    st.sidebar.success("✅ HobbyAllocator imported successfully")
+except ImportError as e:
+    st.sidebar.error(f"❌ Failed to import HobbyAllocator: {e}")
+    st.error("""
+    ### Error: HobbyAllocator import failed
+    
+    This application requires the HobbyAllocator class from main_updated.py.
+    Please ensure main_updated.py is in the same directory as this app.
+    """)
+    st.stop()
 
 # First, check for required dependencies
-def check_pulp_installation():
-    """Comprehensive check of PuLP installation and solver availability"""
+def check_dependencies():
+    """Comprehensive check of all required dependencies"""
+    missing_deps = []
+    
+    try:
+        import pandas as pd
+        st.sidebar.success("✅ pandas imported successfully")
+    except ImportError:
+        missing_deps.append("pandas")
+        
+    try:
+        import numpy as np
+        st.sidebar.success("✅ numpy imported successfully")
+    except ImportError:
+        missing_deps.append("numpy")
+        
+    try:
+        import matplotlib.pyplot as plt
+        st.sidebar.success("✅ matplotlib imported successfully")
+    except ImportError:
+        missing_deps.append("matplotlib")
+        
+    try:
+        import openpyxl
+        st.sidebar.success("✅ openpyxl imported successfully")
+    except ImportError:
+        missing_deps.append("openpyxl")
+        
     try:
         import pulp
         st.sidebar.success(f"✅ PuLP imported successfully (version {pulp.__version__})")
@@ -59,26 +95,29 @@ def check_pulp_installation():
         
         if solvers:
             st.sidebar.success(f"✅ Available solvers: {', '.join(solvers)}")
-            return True
         else:
             st.sidebar.error("❌ No solvers available - optimization will fail")
-            return False
+            missing_deps.append("optimization solvers")
             
-    except ImportError as e:
-        st.sidebar.error(f"❌ PuLP import failed: {e}")
-        st.error("""
-        ### Error: PuLP library not found
+    except ImportError:
+        missing_deps.append("pulp")
+    
+    if missing_deps:
+        st.error(f"""
+        ### Error: Missing dependencies
         
-        This application requires the PuLP optimization library, which seems to be missing.
+        The following required packages are missing: {', '.join(missing_deps)}
         
-        If you're running this locally, please install it with:
+        If you're running this locally, please install them with:
         ```
-        pip install pulp==2.7.0
+        pip install {' '.join(missing_deps)}
         ```
         
         If you're seeing this on Streamlit Cloud, please contact the administrator.
         """)
         return False
+    
+    return True
 
 # Set page configuration
 st.set_page_config(
@@ -99,164 +138,30 @@ def choice_to_word(choice):
     }
     return words.get(choice, str(choice) + "th")
 
-# Function to list all PNG files in a directory
-def find_visualization_files(directory):
-    """Find all PNG files in the given directory"""
-    # Use glob to recursively search for PNG files
-    pattern = os.path.join(directory, "**/*.png")
-    image_files = glob.glob(pattern, recursive=True)
-    return image_files
-
 # Function to create a zip file containing all files
-def create_zip_of_files(files):
+def create_zip_of_files(files_dict):
     """Create a zip file in memory containing all the specified files"""
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for file_path in files:
-            # Get relative path for cleaner zip structure
-            arcname = os.path.basename(file_path)
-            zip_file.write(file_path, arcname=arcname)
+        for filename, content in files_dict.items():
+            if isinstance(content, pd.DataFrame):
+                # Save DataFrame to CSV in memory
+                csv_buffer = io.StringIO()
+                content.to_csv(csv_buffer, index=False)
+                zip_file.writestr(filename, csv_buffer.getvalue())
+            elif isinstance(content, bytes):
+                # Save binary content (like images)
+                zip_file.writestr(filename, content)
+            else:
+                # Save string content
+                zip_file.writestr(filename, str(content))
     
     zip_buffer.seek(0)
     return zip_buffer.getvalue()
 
-# Extract choice counts from output log using regex
-def extract_choice_data_from_log(output_lines):
-    """Parse the detailed output log to extract accurate choice distribution data"""
-    choice_data = {
-        1: (0, 0),  # (count, percentage)
-        2: (0, 0),
-        3: (0, 0),
-        4: (0, 0),
-        5: (0, 0),
-        0: (0, 0),  # No match
-        'pre': (0, 0)  # Pre-assigned
-    }
-    
-    # Patterns to match different lines in the output
-    first_choice_pattern = r"First choice: (\d+) campers \(([0-9.]+)%\)"
-    second_choice_pattern = r"Second choice: (\d+) campers \(([0-9.]+)%\)"
-    third_choice_pattern = r"Third choice: (\d+) campers \(([0-9.]+)%\)"
-    fourth_choice_pattern = r"Fourth choice: (\d+) campers \(([0-9.]+)%\)"
-    fifth_choice_pattern = r"Fifth choice: (\d+) campers \(([0-9.]+)%\)"
-    no_match_pattern = r"No choice matched: (\d+) campers \(([0-9.]+)%\)"
-    
-    # Try to find the statements in the logs
-    for line in output_lines:
-        # First choice
-        match = re.search(first_choice_pattern, line)
-        if match:
-            count = int(match.group(1))
-            percentage = float(match.group(2))
-            choice_data[1] = (count, percentage)
-            continue
-            
-        # Second choice
-        match = re.search(second_choice_pattern, line)
-        if match:
-            count = int(match.group(1))
-            percentage = float(match.group(2))
-            choice_data[2] = (count, percentage)
-            continue
-            
-        # Third choice
-        match = re.search(third_choice_pattern, line)
-        if match:
-            count = int(match.group(1))
-            percentage = float(match.group(2))
-            choice_data[3] = (count, percentage)
-            continue
-            
-        # Fourth choice
-        match = re.search(fourth_choice_pattern, line)
-        if match:
-            count = int(match.group(1))
-            percentage = float(match.group(2))
-            choice_data[4] = (count, percentage)
-            continue
-            
-        # Fifth choice
-        match = re.search(fifth_choice_pattern, line)
-        if match:
-            count = int(match.group(1))
-            percentage = float(match.group(2))
-            choice_data[5] = (count, percentage)
-            continue
-            
-        # No match
-        match = re.search(no_match_pattern, line)
-        if match:
-            count = int(match.group(1))
-            percentage = float(match.group(2))
-            choice_data[0] = (count, percentage)
-            continue
-        
-        # Check if the line contains pre-assigned count
-        if "Pre-assigned campers" in line and ": " in line:
-            parts = line.split(": ")
-            if len(parts) > 1:
-                try:
-                    pre_count = int(parts[1].strip())
-                    # Calculate percentage based on sum of all other counts
-                    total = sum(count for choice, (count, _) in choice_data.items() if choice != 'pre')
-                    if total > 0:
-                        pre_percentage = (pre_count / (total + pre_count)) * 100
-                    else:
-                        pre_percentage = 0
-                    choice_data['pre'] = (pre_count, pre_percentage)
-                except ValueError:
-                    pass
-    
-    return choice_data
-
-# Read choice distribution from master Excel file
-def read_choice_distribution_from_master(output_dir):
-    """Extract choice distribution data from the master allocation file"""
-    master_path = os.path.join(output_dir, "master_allocation.xlsx")
-    if not os.path.exists(master_path):
-        return None
-        
-    try:
-        df = pd.read_excel(master_path)
-        
-        # Check if required columns exist
-        if 'Choice Rank' not in df.columns:
-            return None
-            
-        # Count values
-        choice_counts = df['Choice Rank'].value_counts().to_dict()
-        
-        # Check if Pre-assigned column exists
-        pre_count = 0
-        if 'Pre-assigned' in df.columns:
-            pre_count = (df['Pre-assigned'] == 'Yes').sum()
-            
-        # Calculate percentages
-        total = len(df)
-        choice_data = {}
-        
-        for choice in range(1, 6):
-            count = choice_counts.get(choice, 0)
-            percentage = (count / total) * 100 if total > 0 else 0
-            choice_data[choice] = (count, percentage)
-            
-        # No match (0)
-        count = choice_counts.get(0, 0)
-        percentage = (count / total) * 100 if total > 0 else 0
-        choice_data[0] = (count, percentage)
-        
-        # Pre-assigned
-        percentage = (pre_count / total) * 100 if total > 0 else 0
-        choice_data['pre'] = (pre_count, percentage)
-        
-        return choice_data
-    except Exception as e:
-        st.error(f"Error reading master file: {str(e)}")
-        return None
-
-# Direct plotting functions in case file loading fails
+# Create plotting functions
 def create_allocation_bar_chart(summary_df):
-    """Create an allocation bar chart directly in Streamlit"""
+    """Create an allocation bar chart"""
     # Extract data for plotting
     hobbies = summary_df['Hobby Name'].tolist()
     assigned = summary_df['Number of Campers Assigned'].tolist()
@@ -286,7 +191,7 @@ def create_allocation_bar_chart(summary_df):
         restricted_status = summary_df['Restricted'].tolist()
     
     # Create figure and axis
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(12, 8))
     
     # Plot the stacked bars
     bar_width = 0.6
@@ -351,29 +256,29 @@ def create_allocation_bar_chart(summary_df):
     return fig
 
 def create_choice_distribution_chart(choice_data):
-    """Create a choice distribution chart directly in Streamlit"""
+    """Create a choice distribution chart"""
     # Process choice distribution data
     choices = ['First Choice', 'Second Choice', 'Third Choice', 'Fourth Choice', 'Fifth Choice', 'No Choice Match']
     counts = [
-        choice_data[1][0],  # First choice
-        choice_data[2][0],  # Second choice
-        choice_data[3][0],  # Third choice
-        choice_data[4][0],  # Fourth choice
-        choice_data[5][0],  # Fifth choice
-        choice_data[0][0],  # No choice match
+        choice_data.get(1, 0),  # First choice
+        choice_data.get(2, 0),  # Second choice
+        choice_data.get(3, 0),  # Third choice
+        choice_data.get(4, 0),  # Fourth choice
+        choice_data.get(5, 0),  # Fifth choice
+        choice_data.get(0, 0),  # No choice match
     ]
+    
+    # Add pre-assigned if available
+    if 'pre' in choice_data and choice_data['pre'] > 0:
+        choices.append('Pre-assigned')
+        counts.append(choice_data['pre'])
     
     # Calculate percentages based on the total
     total_campers = sum(counts)
-    if 'pre' in choice_data and choice_data['pre'][0] > 0:
-        total_campers += choice_data['pre'][0]
-        choices.append('Pre-assigned')
-        counts.append(choice_data['pre'][0])
-    
     percentages = [count / total_campers * 100 for count in counts] if total_campers > 0 else [0] * len(counts)
     
     # Create figure and axis
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(12, 8))
     
     # Define colors for the bars
     colors = ['#2ecc71', '#27ae60', '#3498db', '#f1c40f', '#e67e22', '#e74c3c', '#9b59b6']
@@ -404,53 +309,21 @@ def create_choice_distribution_chart(choice_data):
     
     return fig
 
-# Check if the main_updated.py script exists
-def check_required_files():
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main_updated.py")
-    if not os.path.exists(script_path):
-        st.error("Critical error: Required script 'main_updated.py' not found. Please ensure it's in the same directory as this app.")
-        st.stop()
-
-# Initialize session state for temporary directory management
-def init_temp_dir():
-    if 'temp_dir' not in st.session_state:
-        # Create a temporary directory that will be automatically cleaned up
-        st.session_state.temp_dir = tempfile.mkdtemp()
-        
-        # Register cleanup function to run when the app exits
-        def cleanup_temp_files():
-            if os.path.exists(st.session_state.temp_dir):
-                try:
-                    shutil.rmtree(st.session_state.temp_dir)
-                except:
-                    pass
-        
-        atexit.register(cleanup_temp_files)
-
 # Initialize session state variables
 def init_session_state():
     if 'has_run' not in st.session_state:
         st.session_state.has_run = False
-    if 'output_dir' not in st.session_state:
-        st.session_state.output_dir = None
-    if 'visualization_files' not in st.session_state:
-        st.session_state.visualization_files = []
-    if 'summary_df' not in st.session_state:
-        st.session_state.summary_df = None
-    if 'choice_distribution' not in st.session_state:
-        st.session_state.choice_distribution = {}
-    if 'satisfaction_score' not in st.session_state:
-        st.session_state.satisfaction_score = None
-    if 'all_files' not in st.session_state:
-        st.session_state.all_files = []
-    if 'output_log' not in st.session_state:
-        st.session_state.output_log = []
+    if 'allocator' not in st.session_state:
+        st.session_state.allocator = None
+    if 'results' not in st.session_state:
+        st.session_state.results = {}
     if 'last_activity' not in st.session_state:
         st.session_state.last_activity = datetime.now()
 
 # Perform initialization
-check_required_files()
-init_temp_dir()
+if not check_dependencies():
+    st.stop()
+
 init_session_state()
 
 # Update last activity time
@@ -484,15 +357,11 @@ with st.expander("Privacy Information", expanded=False):
     
     # Add clear data button
     if st.button("Clear All Data", key="clear_all_data"):
-        # Keep only essential session state keys
-        keys_to_keep = ['temp_dir', 'last_activity']
+        # Reset session state
         for key in list(st.session_state.keys()):
-            if key not in keys_to_keep:
+            if key not in ['last_activity']:
                 del st.session_state[key]
-        # Reinitialize necessary state variables
-        st.session_state.has_run = False
-        st.session_state.visualization_files = []
-        st.session_state.all_files = []
+        init_session_state()
         st.success("All data has been cleared from your session")
         st.rerun()
 
@@ -645,186 +514,230 @@ if not st.session_state.has_run:
                                          value=default_restricted,
                                          help="Activities that only allow pre-assigned campers (auto-populated from config file if available)")
 
-    # Create temp directory for outputs
-    temp_output_dir = tempfile.mkdtemp(dir=st.session_state.temp_dir)
-
     # Run button
     if st.button("Run Allocation", key="run_allocation_button", type="primary", use_container_width=True):
         if not input_file or not config_file:
             st.error("Error: Both camper preferences and hobby configuration files are required.")
         else:
-            # Check PuLP availability before proceeding
-            if not check_pulp_installation():
-                st.stop()
-            
             # Create progress display
             progress_placeholder = st.empty()
             with progress_placeholder.container():
                 progress_bar = st.progress(0)
                 status_area = st.empty()
             
-            output_area = st.expander("Detailed Output Log", expanded=False)
-            
-            # Create unique output directory within our temp directory
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_dir = os.path.join(temp_output_dir, timestamp)
-            os.makedirs(output_dir, exist_ok=True)
-            
-            # Store the output directory in session state
-            st.session_state.output_dir = output_dir
-            
-            # Save uploaded files to temporary locations
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as f_input:
-                f_input.write(input_file.getvalue())
-                input_path = f_input.name
-                
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as f_config:
-                f_config.write(config_file.getvalue())
-                config_path = f_config.name
-            
-            pre_path = None
-            if pre_assignments_file:
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as f_pre:
-                    f_pre.write(pre_assignments_file.getvalue())
-                    pre_path = f_pre.name
-                    
-            prev_path = None
-            if previous_allocations_file:
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as f_prev:
-                    f_prev.write(previous_allocations_file.getvalue())
-                    prev_path = f_prev.name
-            
-            # Get the path to the main_updated.py script
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            main_script_path = os.path.join(script_dir, "main_updated.py")
-            
-            # Build command
-            cmd = ["python", main_script_path, 
-                   "--input", input_path,
-                   "--config", config_path,
-                   "--weight-factor", str(weight_factor),
-                   "--premium-factor", str(premium_factor),
-                   "--output-dir", output_dir]
-            
-            if pre_path:
-                cmd.extend(["--pre-assignments", pre_path])
-            if prev_path:
-                cmd.extend(["--previous-allocations", prev_path])
-            
-            # Add premium activities if specified (override config)
-            if premium_activities:
-                cmd.extend(["--premium-activities", premium_activities])
-                
-            # Add restricted activities as a command-line argument if specified
-            if restricted_activities:
-                cmd.extend(["--restricted-activities", restricted_activities])
-            
-            status_area.info("Running allocation... Please wait, this may take a few minutes.")
-            output_area.text(f"Command: {' '.join(cmd)}")
-            
             try:
-                # Run allocation
-                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, universal_newlines=True)
-                output_lines = []
+                # Initialize the allocator
+                allocator = HobbyAllocator()
                 
-                for i, line in enumerate(process.stdout):
-                    line_text = line.strip()
-                    output_lines.append(line_text)
-                    output_area.text("\n".join(output_lines[-50:]))  # Show only last 50 lines for performance
+                # Save uploaded files to temporary locations for processing
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as f_input:
+                    f_input.write(input_file.getvalue())
+                    input_path = f_input.name
                     
-                    # Update progress (approximate)
-                    if "Model solved with satisfaction score" in line_text:
-                        progress_bar.progress(0.8)
-                        status_area.success("Optimization complete! Generating reports...")
-                    elif "Creating" in line_text and "visualization" in line_text:
-                        progress_bar.progress(0.9)
-                    elif i % 10 == 0:  # Update progress periodically
-                        progress_bar.progress(min(0.1 + i/500, 0.7))  # Cap at 70% until we know it's done
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as f_config:
+                    f_config.write(config_file.getvalue())
+                    config_path = f_config.name
                 
-                process.wait()
+                pre_path = None
+                if pre_assignments_file:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as f_pre:
+                        f_pre.write(pre_assignments_file.getvalue())
+                        pre_path = f_pre.name
+                        
+                prev_path = None
+                if previous_allocations_file:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as f_prev:
+                        f_prev.write(previous_allocations_file.getvalue())
+                        prev_path = f_prev.name
                 
-                # Store the output log in session state
-                st.session_state.output_log = output_lines
+                # Step 1: Read input data
+                status_area.info("Reading input data...")
+                progress_bar.progress(0.1)
+                allocator.read_input_data(input_path)
+                allocator.read_hobby_config(config_path)
                 
-                # Show results
-                if process.returncode == 0:
-                    # Clear the progress display
-                    progress_placeholder.empty()
+                # Step 2: Read optional data
+                progress_bar.progress(0.2)
+                if pre_path:
+                    allocator.read_pre_assignments(pre_path)
+                if prev_path:
+                    allocator.read_previous_allocations(prev_path, weight_factor)
+                
+                # Step 3: Set up premium and restricted activities
+                progress_bar.progress(0.3)
+                premium_activities_list = None
+                if premium_activities:
+                    premium_activities_list = [activity.strip() for activity in premium_activities.split(',')]
+                
+                if restricted_activities:
+                    restricted_activities_list = [activity.strip() for activity in restricted_activities.split(',')]
+                    allocator.restricted_hobbies = restricted_activities_list
+                
+                # Step 4: Run optimization
+                status_area.info("Running optimization... This may take a few minutes.")
+                progress_bar.progress(0.4)
+                
+                allocator.create_allocation_model(
+                    premium_activities=premium_activities_list, 
+                    premium_factor=premium_factor
+                )
+                
+                progress_bar.progress(0.8)
+                status_area.success("Optimization complete! Generating reports...")
+                
+                # Step 5: Generate all results in memory
+                # Create summary
+                summary_data = []
+                hobby_counts = {}
+                pre_assigned_counts = {}
+                
+                for i, hobby in allocator.allocations.items():
+                    hobby_counts[hobby] = hobby_counts.get(hobby, 0) + 1
+                    if allocator.pre_assignments and i in allocator.pre_assignments:
+                        pre_assigned_counts[hobby] = pre_assigned_counts.get(hobby, 0) + 1
+                
+                for _, row in allocator.hobby_config.iterrows():
+                    hobby_name = row['Name']
+                    assigned = hobby_counts.get(hobby_name, 0)
+                    pre_assigned = pre_assigned_counts.get(hobby_name, 0)
                     
-                    # Set the has_run flag to true
-                    st.session_state.has_run = True
+                    location = row.get('Location', 'Unknown')
+                    leader = row.get('Leader', row.get('Specialty', 'Unknown'))
+                    allowed_groups = row.get('Allowed Groups', row.get('Allowed Divisions', 'All'))
                     
-                    # Extract choice data from output log
-                    choice_data = extract_choice_data_from_log(output_lines)
+                    min_capacity = row['Min Capacity']
+                    max_capacity = row['Max Capacity']
                     
-                    # Store in session state
-                    st.session_state.choice_distribution = choice_data
+                    is_restricted = "No"
+                    if 'Restricted' in row:
+                        restricted_value = str(row['Restricted']).lower()
+                        is_restricted = "Yes" if restricted_value in ['yes', 'true', '1', 'y'] else "No"
+                    else:
+                        is_restricted = "Yes" if hobby_name in allocator.restricted_hobbies else "No"
                     
-                    # Get satisfaction score
-                    satisfaction_score = None
-                    for line in output_lines:
-                        if "Satisfaction score:" in line:
-                            try:
-                                satisfaction_score = float(line.split(":")[-1].strip().rstrip("%"))
-                            except:
-                                pass
+                    summary_data.append({
+                        'Hobby Name': hobby_name,
+                        'Location': location,
+                        'Hobby Leader': leader,
+                        'Allowed Age Groups': allowed_groups,
+                        'Min Capacity': min_capacity,
+                        'Max Capacity': max_capacity,
+                        'Number of Campers Assigned': assigned,
+                        'Pre-assigned Campers': pre_assigned,
+                        'Regular Assigned Campers': assigned - pre_assigned,
+                        'Available Slots': max(0, max_capacity - assigned),
+                        'Restricted': is_restricted
+                    })
+                
+                summary_df = pd.DataFrame(summary_data)
+                
+                # Create master DataFrame
+                master_df = allocator.campers_df.copy()
+                master_df['Assigned Hobby'] = None
+                master_df['Choice Rank'] = None
+                master_df['Pre-assigned'] = 'No'
+                master_df['Priority Weight'] = 1.0
+                master_df['Previous Choice Rank'] = None
+                
+                for i, hobby in allocator.allocations.items():
+                    master_df.loc[i, 'Assigned Hobby'] = hobby
                     
-                    st.session_state.satisfaction_score = satisfaction_score
+                    if allocator.pre_assignments and i in allocator.pre_assignments:
+                        master_df.loc[i, 'Pre-assigned'] = 'Yes'
                     
-                    # Wait a moment for files to be completely written to disk
-                    time.sleep(2)
+                    if hasattr(allocator, 'weights') and allocator.weights and i in allocator.weights:
+                        master_df.loc[i, 'Priority Weight'] = allocator.weights[i]
                     
-                    # Find all files in the output directory
-                    all_files = []
-                    for root, dirs, files in os.walk(output_dir):
-                        for file in files:
-                            file_path = os.path.join(root, file)
-                            all_files.append(file_path)
+                    if hasattr(allocator, 'previous_allocations') and allocator.previous_allocations and i in allocator.previous_allocations:
+                        master_df.loc[i, 'Previous Choice Rank'] = allocator.previous_allocations[i]
                     
-                    st.session_state.all_files = all_files
+                    choice_rank = 0
+                    for j in range(1, 6):
+                        choice_col = f'Choice {j}'
+                        if choice_col in master_df.columns and master_df.loc[i, choice_col] == hobby:
+                            choice_rank = j
+                            break
+                    master_df.loc[i, 'Choice Rank'] = choice_rank
+                
+                # Create choice distribution data
+                choice_data = {}
+                for i in range(6):  # 0-5 for no match, 1st-5th choice
+                    choice_data[i] = 0
+                choice_data['pre'] = 0
+                
+                for i, hobby in allocator.allocations.items():
+                    if allocator.pre_assignments and i in allocator.pre_assignments:
+                        choice_data['pre'] += 1
+                        continue
                     
-                    # Find visualization files with recursive glob
-                    image_files = find_visualization_files(output_dir)
-                    st.session_state.visualization_files = image_files
+                    choice_rank = 0
+                    for j in range(1, 6):
+                        choice_col = f'Choice {j}'
+                        if choice_col in allocator.campers_df.columns and pd.notna(allocator.campers_df.loc[i, choice_col]) and allocator.campers_df.loc[i, choice_col] == hobby:
+                            choice_rank = j
+                            break
                     
-                    # Try to read summary file
-                    summary_path = os.path.join(output_dir, "allocation_summary.csv")
-                    summary_df = None
-                    if os.path.exists(summary_path):
-                        try:
-                            summary_df = pd.read_csv(summary_path)
-                            st.session_state.summary_df = summary_df
-                        except Exception as e:
-                            st.warning(f"Could not read summary file: {str(e)}")
-                    
-                    # Rerun to display results page
-                    st.rerun()
-                else:
-                    progress_bar.progress(1.0)
-                    status_area.error(f"Error: Process exited with code {process.returncode}")
-                    st.error("\n".join(output_lines[-10:]))  # Show last few lines of output
-            
-            except Exception as e:
-                progress_bar.progress(1.0)
-                status_area.error(f"Error during allocation process: {str(e)}")
-                st.error(f"An error occurred during the allocation process: {str(e)}")
-                st.error("Please check your input files and try again.")
-            
-            finally:
+                    choice_data[choice_rank] += 1
+                
+                # Create visualizations
+                progress_bar.progress(0.9)
+                status_area.info("Creating visualizations...")
+                
+                allocation_chart = create_allocation_bar_chart(summary_df)
+                choice_chart = create_choice_distribution_chart(choice_data)
+                
+                # Save chart images to bytes
+                allocation_img_bytes = io.BytesIO()
+                allocation_chart.savefig(allocation_img_bytes, format='png', dpi=300, bbox_inches='tight')
+                allocation_img_bytes.seek(0)
+                
+                choice_img_bytes = io.BytesIO()
+                choice_chart.savefig(choice_img_bytes, format='png', dpi=300, bbox_inches='tight')
+                choice_img_bytes.seek(0)
+                
+                # Store results in session state
+                st.session_state.results = {
+                    'allocator': allocator,
+                    'summary_df': summary_df,
+                    'master_df': master_df,
+                    'choice_data': choice_data,
+                    'allocation_chart': allocation_chart,
+                    'choice_chart': choice_chart,
+                    'allocation_img_bytes': allocation_img_bytes.getvalue(),
+                    'choice_img_bytes': choice_img_bytes.getvalue()
+                }
+                
                 # Clean up temporary files
-                for file_path in [input_path, config_path]:
+                for file_path in [input_path, config_path, pre_path, prev_path]:
                     if file_path and os.path.exists(file_path):
                         try:
                             os.unlink(file_path)
                         except:
                             pass
                 
-                for file_path in [pre_path, prev_path]:
-                    if file_path and file_path is not None and os.path.exists(file_path):
+                progress_bar.progress(1.0)
+                status_area.success("Allocation completed successfully!")
+                
+                # Set completion flag
+                st.session_state.has_run = True
+                
+                # Clear progress display and rerun to show results
+                progress_placeholder.empty()
+                time.sleep(1)
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"An error occurred during allocation: {str(e)}")
+                st.error("Please check your input files and try again.")
+                
+                # Clean up temporary files on error
+                for file_path in [input_path, config_path, pre_path, prev_path]:
+                    if file_path and os.path.exists(file_path):
                         try:
                             os.unlink(file_path)
                         except:
                             pass
+
 else:
     # Display results section
     st.success("✅ Allocation completed successfully!")
@@ -832,76 +745,68 @@ else:
     # Add Start New Allocation button at the top of results
     if st.button("Start New Allocation", key="results_new_allocation", use_container_width=True):
         # Reset session state
-        keys_to_keep = ['temp_dir', 'last_activity']
         for key in list(st.session_state.keys()):
-            if key not in keys_to_keep:
+            if key not in ['last_activity']:
                 del st.session_state[key]
-        st.session_state.has_run = False
+        init_session_state()
         st.rerun()
+    
+    # Get results from session state
+    results = st.session_state.results
+    allocator = results['allocator']
+    summary_df = results['summary_df']
+    master_df = results['master_df']
+    choice_data = results['choice_data']
     
     # Create a results section
     st.header("Allocation Results")
     
-    # Get choice data from session state
-    choice_data = st.session_state.choice_distribution
-    
     # Calculate satisfaction score (sum of top 3 choices)
-    if choice_data and all(choice in choice_data for choice in [1, 2, 3]):
-        # Get counts for first, second, and third choices
-        first_count = choice_data[1][0] if 1 in choice_data else 0
-        second_count = choice_data[2][0] if 2 in choice_data else 0
-        third_count = choice_data[3][0] if 3 in choice_data else 0
-        
-        # Calculate total excluding pre-assigned
-        total_regular = 0
-        for choice, (count, _) in choice_data.items():
-            if choice != 'pre':
-                total_regular += count
-        
-        # Calculate satisfaction percentage
-        if total_regular > 0:
-            satisfaction_score = (first_count + second_count + third_count) / total_regular * 100
-        else:
-            satisfaction_score = 0
-    else:
-        # Fall back to the one extracted from logs
-        satisfaction_score = st.session_state.satisfaction_score
-
+    first_count = choice_data.get(1, 0)
+    second_count = choice_data.get(2, 0)
+    third_count = choice_data.get(3, 0)
+    
+    total_regular = sum(choice_data[i] for i in range(6))  # 0-5
+    satisfaction_score = (first_count + second_count + third_count) / total_regular * 100 if total_regular > 0 else 0
+    
     # Display metrics
     metrics_cols = st.columns(4)
-    if satisfaction_score is not None:
-        metrics_cols[0].metric("Overall Satisfaction", f"{satisfaction_score:.1f}%", 
-                            help="Percentage of campers assigned to their top 3 choices")
+    metrics_cols[0].metric("Overall Satisfaction", f"{satisfaction_score:.1f}%", 
+                        help="Percentage of campers assigned to their top 3 choices")
     
-    if choice_data and 1 in choice_data:
-        first_count, first_pct = choice_data[1]
+    if first_count > 0:
+        first_pct = (first_count / total_regular) * 100 if total_regular > 0 else 0
         metrics_cols[1].metric("First Choice", f"{first_pct:.1f}%", 
                             help=f"{first_count} campers")
     
-    if choice_data and 2 in choice_data:
-        second_count, second_pct = choice_data[2]
+    if second_count > 0:
+        second_pct = (second_count / total_regular) * 100 if total_regular > 0 else 0
         metrics_cols[2].metric("Second Choice", f"{second_pct:.1f}%", 
                             help=f"{second_count} campers")
     
-    if choice_data and 3 in choice_data:
-        third_count, third_pct = choice_data[3]
+    if third_count > 0:
+        third_pct = (third_count / total_regular) * 100 if total_regular > 0 else 0
         metrics_cols[3].metric("Third Choice", f"{third_pct:.1f}%", 
                             help=f"{third_count} campers")
     
     # Additional metrics row
-    if choice_data and len(choice_data) > 3:
+    if choice_data:
         metrics_row2 = st.columns(4)
         idx = 0
         
         for choice in [4, 5, 0, 'pre']:
-            if choice in choice_data and choice_data[choice][0] > 0:
-                count, pct = choice_data[choice]
+            if choice in choice_data and choice_data[choice] > 0:
+                count = choice_data[choice]
                 if choice == 0:
                     label = "No Match"
+                    pct = (count / total_regular) * 100 if total_regular > 0 else 0
                 elif choice == 'pre':
                     label = "Pre-assigned"
+                    total_with_pre = total_regular + count
+                    pct = (count / total_with_pre) * 100 if total_with_pre > 0 else 0
                 else:
                     label = f"{choice_to_word(choice)} Choice"
+                    pct = (count / total_regular) * 100 if total_regular > 0 else 0
                     
                 metrics_row2[idx].metric(label, f"{pct:.1f}%", 
                                     help=f"{count} campers")
@@ -912,84 +817,37 @@ else:
     # Display visualizations
     st.subheader("Visualizations")
     
-    # Create a toggle/selector for the visualizations
-    image_files = st.session_state.visualization_files
+    # Create tabs for visualizations
+    tab1, tab2 = st.tabs(["Hobby Allocation", "Choice Distribution"])
     
-    if image_files:
-        # Create a dictionary of visualization types
-        viz_types = {}
-        
-        for img_path in image_files:
-            filename = os.path.basename(img_path)
-            
-            if "choice_distribution.png" == filename and "hobby" not in filename:
-                viz_types["Choice Distribution"] = img_path
-            elif "allocation_chart.png" == filename:
-                viz_types["Hobby Allocation"] = img_path
-            elif "hobby_choice_distribution.png" == filename:
-                viz_types["Choice Distribution by Hobby"] = img_path
-            else:
-                # Add any other images
-                viz_types[filename] = img_path
-        
-        # Create tabs for the visualizations
-        if viz_types:
-            tab_names = list(viz_types.keys())
-            tabs = st.tabs(tab_names)
-            
-            for i, (name, img_path) in enumerate(viz_types.items()):
-                with tabs[i]:
-                    try:
-                        # Read the image file
-                        with open(img_path, "rb") as f:
-                            image_bytes = f.read()
-                            st.image(image_bytes, use_container_width=True)
-                            
-                            # Add download button below each image
-                            st.download_button(
-                                label=f"Download this visualization",
-                                data=image_bytes,
-                                file_name=os.path.basename(img_path),
-                                mime="image/png",
-                                key=f"download_viz_{i}",
-                                use_container_width=True
-                            )
-                    except Exception as e:
-                        st.error(f"Error displaying image {name}: {str(e)}")
-    else:
-        # If no images were found, try to create them directly
-        st.warning("No visualization files were found. Creating visualizations directly...")
-        
-        # Create choice distribution chart
-        if choice_data:
-            st.subheader("Choice Distribution")
-            try:
-                fig = create_choice_distribution_chart(choice_data)
-                st.pyplot(fig)
-            except Exception as e:
-                st.error(f"Error creating choice distribution chart: {str(e)}")
-        
-        # Create allocation chart if summary data is available
-        if st.session_state.summary_df is not None:
-            st.subheader("Hobby Allocation")
-            try:
-                fig = create_allocation_bar_chart(st.session_state.summary_df)
-                st.pyplot(fig)
-            except Exception as e:
-                st.error(f"Error creating allocation chart: {str(e)}")
+    with tab1:
+        st.pyplot(results['allocation_chart'])
+        st.download_button(
+            label="Download Allocation Chart",
+            data=results['allocation_img_bytes'],
+            file_name="allocation_chart.png",
+            mime="image/png",
+            use_container_width=True
+        )
     
-    # Display summary file if available
-    summary_df = st.session_state.summary_df
-    if summary_df is not None:
-        st.subheader("Allocation Summary")
-        
-        # Check if Restricted column exists
-        if 'Restricted' in summary_df.columns:
-            # Add info about what "Restricted" means
-            st.info("Note: 'Restricted' hobbies only allow pre-assigned campers. " +
-                  "Non-restricted hobbies adjust their capacity based on pre-assignments.")
-        
-        st.dataframe(summary_df, use_container_width=True)
+    with tab2:
+        st.pyplot(results['choice_chart'])
+        st.download_button(
+            label="Download Choice Distribution Chart",
+            data=results['choice_img_bytes'],
+            file_name="choice_distribution.png",
+            mime="image/png",
+            use_container_width=True
+        )
+    
+    # Display summary data
+    st.subheader("Allocation Summary")
+    
+    if 'Restricted' in summary_df.columns:
+        st.info("Note: 'Restricted' hobbies only allow pre-assigned campers. " +
+              "Non-restricted hobbies adjust their capacity based on pre-assignments.")
+    
+    st.dataframe(summary_df, use_container_width=True)
     
     # Display choice distribution stats in a table
     st.subheader("Choice Distribution")
@@ -999,15 +857,19 @@ else:
     ordered_choices = [1, 2, 3, 4, 5, 0, 'pre']
     
     for choice in ordered_choices:
-        if choice in choice_data and choice_data[choice][0] > 0:
-            count, percentage = choice_data[choice]
+        if choice in choice_data and choice_data[choice] > 0:
+            count = choice_data[choice]
             
             if choice == 0:
                 label = "No Match"
+                percentage = (count / total_regular) * 100 if total_regular > 0 else 0
             elif choice == 'pre':
                 label = "Pre-assigned"
+                total_with_pre = total_regular + count
+                percentage = (count / total_with_pre) * 100 if total_with_pre > 0 else 0
             else:
                 label = choice_to_word(choice) + " Choice"
+                percentage = (count / total_regular) * 100 if total_regular > 0 else 0
                 
             choice_data_table.append({
                 "Choice": label,
@@ -1023,118 +885,180 @@ else:
     # Download section
     st.subheader("Download Files")
     
-    # Add "Download All Files" button at the top of the download section
-    if st.session_state.all_files:
-        zip_data = create_zip_of_files(st.session_state.all_files)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        st.download_button(
-            label="📦 Download All Files as ZIP",
-            data=zip_data,
-            file_name=f"hobby_allocation_all_files_{timestamp}.zip",
-            mime="application/zip",
-            key="download_all_files",
-            use_container_width=True
-        )
-    
-    # Create mapping of file extensions to friendly names and MIME types
-    file_types = {
-        ".xlsx": ("Excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-        ".csv": ("CSV", "text/csv"),
-        ".png": ("Image", "image/png")
+    # Prepare files for download
+    files_to_zip = {
+        'allocation_summary.csv': summary_df,
+        'master_allocation.xlsx': master_df,
+        'allocation_chart.png': results['allocation_img_bytes'],
+        'choice_distribution.png': results['choice_img_bytes']
     }
     
-    # Group files by type for better organization
-    grouped_files = {}
-    for file_path in st.session_state.all_files:
-        file_name = os.path.basename(file_path)
-        file_ext = os.path.splitext(file_name)[1].lower()
+    # Create hobby allocation Excel file
+    hobby_dfs = {}
+    for camper_idx, hobby in allocator.allocations.items():
+        if hobby not in hobby_dfs:
+            hobby_dfs[hobby] = []
         
-        if file_ext not in grouped_files:
-            grouped_files[file_ext] = []
+        camper = allocator.campers_df.iloc[camper_idx]
+        cabin = camper.get('Cabin', 'Unknown') if pd.notna(camper.get('Cabin', '')) else "Unknown"
+        pre_assigned = allocator.pre_assignments and camper_idx in allocator.pre_assignments
         
-        grouped_files[file_ext].append((file_name, file_path))
+        hobby_dfs[hobby].append({
+            'Name': camper['Full Name'],
+            'Division': camper['Division'],
+            'Cabin': cabin,
+            'Pre-assigned': 'Yes' if pre_assigned else 'No'
+        })
     
-    # Create a tab for each file type
-    if grouped_files:
-        file_tabs = []
-        for ext, (name, _) in file_types.items():
-            if ext in grouped_files:
-                file_tabs.append(f"{name} Files ({len(grouped_files[ext])})")
-            else:
-                file_tabs.append(f"{name} Files (0)")
+    # Create division allocation Excel file
+    division_dfs = {}
+    for camper_idx, hobby in allocator.allocations.items():
+        camper = allocator.campers_df.iloc[camper_idx]
+        division = camper['Division']
         
-        if file_tabs:  # Only create tabs if there are files
-            download_tabs = st.tabs(file_tabs)
+        if division not in division_dfs:
+            division_dfs[division] = []
+        
+        cabin = camper.get('Cabin', 'Unknown') if pd.notna(camper.get('Cabin', '')) else "Unknown"
+        pre_assigned = allocator.pre_assignments and camper_idx in allocator.pre_assignments
+        
+        division_dfs[division].append({
+            'Cabin': cabin,
+            'Name': camper['Full Name'],
+            'Assigned Hobby': hobby,
+            'Pre-assigned': 'Yes' if pre_assigned else 'No'
+        })
+    
+    # Create download buttons
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Download individual files
+        st.subheader("Individual Files")
+        
+        # Summary CSV
+        csv_buffer = io.StringIO()
+        summary_df.to_csv(csv_buffer, index=False)
+        st.download_button(
+            label="Download Summary (CSV)",
+            data=csv_buffer.getvalue(),
+            file_name="allocation_summary.csv",
+            mime="text/csv"
+        )
+        
+        # Master Excel
+        excel_buffer = io.BytesIO()
+        master_df.to_excel(excel_buffer, index=False, engine='openpyxl')
+        st.download_button(
+            label="Download Master Allocation (Excel)",
+            data=excel_buffer.getvalue(),
+            file_name="master_allocation.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+        # Hobby allocation Excel
+        hobby_excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(hobby_excel_buffer, engine='openpyxl') as writer:
+            for hobby, data in hobby_dfs.items():
+                if data:
+                    df = pd.DataFrame(data).sort_values(by=['Division', 'Name'])
+                    sheet_name = str(hobby)[:31]
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+        
+        st.download_button(
+            label="Download Hobby Allocation (Excel)",
+            data=hobby_excel_buffer.getvalue(),
+            file_name="hobby_allocation.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+        # Division allocation Excel
+        division_excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(division_excel_buffer, engine='openpyxl') as writer:
+            for division, data in division_dfs.items():
+                if data:
+                    df = pd.DataFrame(data).sort_values(by=['Cabin', 'Name'])
+                    sheet_name = str(division)[:31]
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+        
+        st.download_button(
+            label="Download Division Allocation (Excel)",
+            data=division_excel_buffer.getvalue(),
+            file_name="division_allocation.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    
+    with col2:
+        st.subheader("All Files")
+        
+        # Create comprehensive ZIP file
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            # Add summary CSV
+            csv_data = io.StringIO()
+            summary_df.to_csv(csv_data, index=False)
+            zip_file.writestr('allocation_summary.csv', csv_data.getvalue())
             
-            # Excel files
-            with download_tabs[0]:
-                if ".xlsx" in grouped_files:
-                    cols = st.columns(3)
-                    for i, (file_name, file_path) in enumerate(sorted(grouped_files[".xlsx"])):
-                        try:
-                            with open(file_path, "rb") as file:
-                                file_data = file.read()
-                                    
-                            cols[i % 3].download_button(
-                                label=file_name,
-                                data=file_data,
-                                file_name=file_name,
-                                mime=file_types[".xlsx"][1],
-                                key=f"xlsx_{i}",
-                                use_container_width=True
-                            )
-                        except Exception as e:
-                            cols[i % 3].error(f"Error with file {file_name}: {str(e)}")
-                else:
-                    st.info("No Excel files available for download.")
+            # Add master Excel
+            excel_data = io.BytesIO()
+            master_df.to_excel(excel_data, index=False, engine='openpyxl')
+            zip_file.writestr('master_allocation.xlsx', excel_data.getvalue())
             
-            # CSV files
-            with download_tabs[1]:
-                if ".csv" in grouped_files:
-                    cols = st.columns(3)
-                    for i, (file_name, file_path) in enumerate(sorted(grouped_files[".csv"])):
-                        try:
-                            with open(file_path, "rb") as file:
-                                file_data = file.read()
-                                    
-                            cols[i % 3].download_button(
-                                label=file_name,
-                                data=file_data,
-                                file_name=file_name,
-                                mime=file_types[".csv"][1],
-                                key=f"csv_{i}",
-                                use_container_width=True
-                            )
-                        except Exception as e:
-                            cols[i % 3].error(f"Error with file {file_name}: {str(e)}")
-                else:
-                    st.info("No CSV files available for download.")
+            # Add hobby allocation Excel
+            hobby_excel_data = io.BytesIO()
+            with pd.ExcelWriter(hobby_excel_data, engine='openpyxl') as writer:
+                for hobby, data in hobby_dfs.items():
+                    if data:
+                        df = pd.DataFrame(data).sort_values(by=['Division', 'Name'])
+                        sheet_name = str(hobby)[:31]
+                        df.to_excel(writer, sheet_name=sheet_name, index=False)
+            zip_file.writestr('hobby_allocation.xlsx', hobby_excel_data.getvalue())
             
-            # Image files
-            with download_tabs[2]:
-                if ".png" in grouped_files:
-                    cols = st.columns(3)
-                    for i, (file_name, file_path) in enumerate(sorted(grouped_files[".png"])):
-                        try:
-                            with open(file_path, "rb") as file:
-                                file_data = file.read()
-                                # Show a thumbnail
-                                cols[i % 3].image(file_data, caption=file_name, width=200)
-                                # Add download button
-                                cols[i % 3].download_button(
-                                    label=f"Download {file_name}",
-                                    data=file_data,
-                                    file_name=file_name,
-                                    mime=file_types[".png"][1],
-                                    key=f"png_{i}",
-                                    use_container_width=True
-                                )
-                        except Exception as e:
-                            cols[i % 3].error(f"Error with file {file_name}: {str(e)}")
-                else:
-                    st.info("No image files available for download.")
-    else:
-        st.info("No files available for download.")
+            # Add division allocation Excel
+            division_excel_data = io.BytesIO()
+            with pd.ExcelWriter(division_excel_data, engine='openpyxl') as writer:
+                for division, data in division_dfs.items():
+                    if data:
+                        df = pd.DataFrame(data).sort_values(by=['Cabin', 'Name'])
+                        sheet_name = str(division)[:31]
+                        df.to_excel(writer, sheet_name=sheet_name, index=False)
+            zip_file.writestr('division_allocation.xlsx', division_excel_data.getvalue())
+            
+            # Add visualizations
+            zip_file.writestr('allocation_chart.png', results['allocation_img_bytes'])
+            zip_file.writestr('choice_distribution.png', results['choice_img_bytes'])
+            
+            # Add next week's previous allocations
+            next_week_df = pd.DataFrame()
+            next_week_df['Full Name'] = allocator.campers_df['Full Name']
+            next_week_df['Division'] = allocator.campers_df['Division']
+            next_week_df['Assigned Hobby'] = None
+            next_week_df['Choice Rank'] = None
+            
+            for i, hobby in allocator.allocations.items():
+                next_week_df.loc[i, 'Assigned Hobby'] = hobby
+                choice_rank = 0
+                for j in range(1, 6):
+                    choice_col = f'Choice {j}'
+                    if choice_col in allocator.campers_df.columns and allocator.campers_df.loc[i, choice_col] == hobby:
+                        choice_rank = j
+                        break
+                next_week_df.loc[i, 'Choice Rank'] = choice_rank
+            
+            next_week_csv = io.StringIO()
+            next_week_df.to_csv(next_week_csv, index=False)
+            zip_file.writestr('next_week_previous_allocations.csv', next_week_csv.getvalue())
+        
+        zip_buffer.seek(0)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        st.download_button(
+            label="📦 Download All Files (ZIP)",
+            data=zip_buffer.getvalue(),
+            file_name=f"hobby_allocation_complete_{timestamp}.zip",
+            mime="application/zip",
+            use_container_width=True
+        )
 
 # Add help information to sidebar
 st.sidebar.title("About")
@@ -1146,9 +1070,10 @@ st.sidebar.info(
 
 # Add system status check to sidebar
 with st.sidebar.expander("System Status", expanded=False):
-    check_pulp_installation()
     st.text(f"App Version: {APP_VERSION}")
     st.text(f"Python: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
+    st.text("✅ Integrated Architecture")
+    st.text("✅ No Subprocess Dependencies")
 
 st.sidebar.title("Help")
 st.sidebar.markdown(
